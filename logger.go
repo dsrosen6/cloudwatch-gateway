@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,25 +62,10 @@ func (h *handler) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= h.logLevel
 }
 
-func (h *handler) Handle(ctx context.Context, record slog.Record) error {
-	logEntry := map[string]any{
-		"time":    record.Time.Format(time.RFC3339),
-		"level":   record.Level.String(),
-		"message": record.Message,
-	}
-
-	for _, attr := range h.attrs {
-		addAttrToMap(logEntry, attr)
-	}
-
-	record.Attrs(func(attr slog.Attr) bool {
-		addAttrToMap(logEntry, attr)
-		return true
-	})
-
+func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	var groupName string
-	if ctxGroup := ctx.Value(logGroupKey); ctxGroup != nil {
-		if g, ok := ctxGroup.(string); ok && g != "" {
+	if ctxGrp := ctx.Value(logGroupKey); ctxGrp != nil {
+		if g, ok := ctxGrp.(string); ok && g != "" {
 			groupName = g
 		}
 	}
@@ -88,23 +74,32 @@ func (h *handler) Handle(ctx context.Context, record slog.Record) error {
 		return fmt.Errorf("log_group is required in context")
 	}
 
-	// Always use "log-stream" as the base stream name
 	streamName := "log-stream"
 
-	if len(h.groups) > 0 {
-		logEntry["groups"] = h.groups
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	appendStringField(&buf, "level", r.Level.String(), false)
+	appendStringField(&buf, "time", r.Time.Format(time.RFC3339), true)
+	appendStringField(&buf, "message", r.Message, true)
+
+	for _, attr := range h.attrs {
+		appendAttr(&buf, attr, true)
 	}
 
-	message, err := json.Marshal(logEntry)
-	if err != nil {
-		return fmt.Errorf("failed to marshal log entry: %w", err)
-	}
+	r.Attrs(func(attr slog.Attr) bool {
+		appendAttr(&buf, attr, true)
+		return true
+	})
+
+	buf.WriteByte('}')
+	message := buf.Bytes()
 
 	if err := h.ensureLogGroup(ctx, groupName); err != nil {
 		return fmt.Errorf("ensuring log group: %w", err)
 	}
 
-	actualStreamName, err := h.ensureLogStream(ctx, groupName, streamName)
+	actualStrmName, err := h.ensureLogStream(ctx, groupName, streamName)
 	if err != nil {
 		return fmt.Errorf("ensuring log stream: %w", err)
 	}
@@ -114,22 +109,66 @@ func (h *handler) Handle(ctx context.Context, record slog.Record) error {
 
 	input := &cloudwatchlogs.PutLogEventsInput{
 		LogGroupName:  aws.String(groupName),
-		LogStreamName: aws.String(actualStreamName),
+		LogStreamName: aws.String(actualStrmName),
 		LogEvents: []types.InputLogEvent{
 			{
 				Message:   aws.String(string(message)),
-				Timestamp: aws.Int64(record.Time.UnixMilli()),
+				Timestamp: aws.Int64(r.Time.UnixMilli()),
 			},
 		},
 	}
 
-	result, err := h.client.PutLogEvents(ctx, input)
+	res, err := h.client.PutLogEvents(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to put log events: %w", err)
 	}
 
-	h.sequenceToken = result.NextSequenceToken
+	h.sequenceToken = res.NextSequenceToken
 	return nil
+}
+
+func appendStringField(buf *bytes.Buffer, key, value string, needsComma bool) {
+	if needsComma {
+		buf.WriteByte(',')
+	}
+	buf.WriteByte('"')
+	buf.WriteString(key)
+	buf.WriteString(`":"`)
+	buf.WriteString(value)
+	buf.WriteByte('"')
+}
+
+func appendAttr(buf *bytes.Buffer, attr slog.Attr, needsComma bool) {
+	attr.Value = attr.Value.Resolve()
+	if attr.Equal(slog.Attr{}) {
+		// disregard empty value
+		return
+	}
+
+	if needsComma {
+		buf.WriteByte(',')
+	}
+
+	buf.WriteByte('"')
+	buf.WriteString(attr.Key)
+	buf.WriteString(`":`)
+
+	switch attr.Value.Kind() {
+	case slog.KindGroup:
+		buf.WriteByte('{')
+		groupAttrs := attr.Value.Group()
+		for i, a := range groupAttrs {
+			appendAttr(buf, a, i > 0)
+		}
+		buf.WriteByte('}')
+	default:
+		val := attr.Value.Any()
+		if err, ok := val.(error); ok {
+			val = err.Error()
+		}
+		valueJSON, _ := json.Marshal(val)
+		buf.Write(valueJSON)
+	}
 }
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -165,6 +204,8 @@ func (h *handler) WithGroup(name string) slog.Handler {
 }
 
 func (h *handler) ensureLogGroup(ctx context.Context, groupName string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.createdGroups[groupName] {
 		return nil
 	}
@@ -193,6 +234,8 @@ func (h *handler) ensureLogGroup(ctx context.Context, groupName string) error {
 }
 
 func (h *handler) ensureLogStream(ctx context.Context, groupName, streamName string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	key := fmt.Sprintf("%s/%s", groupName, streamName)
 
 	if timestampedName, exists := h.createdStreams[key]; exists {
@@ -215,23 +258,4 @@ func (h *handler) ensureLogStream(ctx context.Context, groupName, streamName str
 	}
 
 	return timestampedName, nil
-}
-
-func addAttrToMap(m map[string]any, attr slog.Attr) {
-	if attr.Value.Kind() == slog.KindGroup {
-		// Handle group attributes by creating a nested map
-		groupMap := make(map[string]any)
-		for _, groupAttr := range attr.Value.Group() {
-			addAttrToMap(groupMap, groupAttr)
-		}
-		m[attr.Key] = groupMap
-	} else {
-		val := attr.Value.Any()
-		if err, ok := val.(error); ok {
-			m[attr.Key] = err.Error()
-		} else {
-			m[attr.Key] = val
-		}
-		m[attr.Key] = attr.Value.Any()
-	}
 }
