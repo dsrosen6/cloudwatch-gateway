@@ -80,7 +80,6 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	buf.WriteByte('{')
 
 	appendStringField(&buf, "level", r.Level.String(), false)
-	appendStringField(&buf, "time", r.Time.Format(time.RFC3339), true)
 	appendStringField(&buf, "message", r.Message, true)
 
 	for _, attr := range h.attrs {
