@@ -33,18 +33,15 @@ type (
 		createdStreams map[string]string // maps original stream name to timestamped version
 	}
 
-	handlerParams struct {
-		logLevel      slog.Level
-		retentionDays int32 // Number of days to retain logs (0 = never expire)
-	}
 	contextKey string
 )
 
 const (
-	logGroupKey contextKey = "cloudwatch_log_group"
+	logGroupKey      contextKey = "cloudwatch_log_group"
+	retentionDaysKey contextKey = "cloudwatch_retention_days"
 )
 
-func newLogger(ctx context.Context, params handlerParams) (*handler, error) {
+func newLogger(ctx context.Context, level slog.Level) (*handler, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -54,7 +51,7 @@ func newLogger(ctx context.Context, params handlerParams) (*handler, error) {
 
 	return &handler{
 		client:         client,
-		logLevel:       params.logLevel,
+		logLevel:       level,
 		createdGroups:  make(map[string]bool),
 		createdStreams: make(map[string]string),
 	}, nil
@@ -179,8 +176,17 @@ func (h *handler) ensureLogGroup(ctx context.Context, groupName string) error {
 	h.createdGroups[groupName] = true
 
 	if err != nil {
-		// Log group may already exist
+		// log group probably already exists
 		return nil
+	}
+
+	if retentionDays := ctx.Value(retentionDaysKey); retentionDays != nil {
+		if days, ok := retentionDays.(int32); ok {
+			_, _ = h.client.PutRetentionPolicy(ctx, &cloudwatchlogs.PutRetentionPolicyInput{
+				LogGroupName:    aws.String(groupName),
+				RetentionInDays: aws.Int32(days),
+			})
+		}
 	}
 
 	return nil

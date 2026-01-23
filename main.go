@@ -9,11 +9,17 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 )
 
+type Attribute struct {
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+}
+
 type LogRequest struct {
-	LogGroup   string         `json:"log_group"`
-	Level      string         `json:"level,omitempty"` // debug, info, warn, error
-	Message    string         `json:"message"`
-	Attributes map[string]any `json:"attributes,omitempty"`
+	LogGroup      string      `json:"log_group"`
+	Level         string      `json:"level,omitempty"`
+	Message       string      `json:"message"`
+	Attributes    []Attribute `json:"attributes,omitempty"`
+	RetentionDays *int32      `json:"retention_days,omitempty"`
 }
 
 type LogResponse struct {
@@ -27,9 +33,7 @@ var logger *slog.Logger
 func init() {
 	ctx := context.Background()
 
-	h, err := newLogger(ctx, handlerParams{
-		logLevel: slog.LevelDebug,
-	})
+	h, err := newLogger(ctx, slog.LevelDebug)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create logger: %v", err))
 	}
@@ -58,10 +62,13 @@ func handleRequest(ctx context.Context, request LogRequest) (LogResponse, error)
 	}
 
 	ctx = context.WithValue(ctx, logGroupKey, request.LogGroup)
+	if request.RetentionDays != nil {
+		ctx = context.WithValue(ctx, retentionDaysKey, *request.RetentionDays)
+	}
 
 	attrs := make([]slog.Attr, 0, len(request.Attributes))
-	for key, value := range request.Attributes {
-		attrs = append(attrs, slog.Any(key, value))
+	for _, attr := range request.Attributes {
+		attrs = append(attrs, slog.Any(attr.Key, attr.Value))
 	}
 
 	logger.LogAttrs(ctx, level, request.Message, attrs...)
