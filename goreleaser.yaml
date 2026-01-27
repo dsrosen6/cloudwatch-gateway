@@ -1,0 +1,43 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - goos: [linux]
+    goarch: [amd64, arm64]
+    binary: bootstrap
+
+archives:
+  - id: "full-archive"
+    formats: [tar.gz]
+    files: [deploy.sh, README.md]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_linux_
+      {{- if eq .Arch "arm64" }}arm64
+      {{- else }}x86_64
+      {{- end }}
+
+  - id: "function-zip"
+    formats: [zip]
+    files: [none*] # only zip the binary
+    name_template: >-
+      function_
+      {{- if eq .Arch "arm64" }}arm64
+      {{- else }}x86_64
+      {{- end }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  footer: >-
+
+    ---
+
+    Released by [GoReleaser](https://github.com/goreleaser/goreleaser).

@@ -183,7 +183,6 @@ full_deploy() {
         echo "function name not provided; using 'cloudwatch-gateway'"
         FUNCTION_NAME="cloudwatch-gateway"
         ROLE_NAME="cloudwatch-gateway-role"
-        return 1
     fi
 
     if ! create_role "$ROLE_NAME"; then
