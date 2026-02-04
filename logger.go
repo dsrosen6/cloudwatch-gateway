@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -209,10 +210,13 @@ func (h *handler) ensureLogGroup(ctx context.Context, groupName string) error {
 		return nil
 	}
 
-	h.client.CreateLogGroup(ctx, &cloudwatchlogs.CreateLogGroupInput{
+	_, err := h.client.CreateLogGroup(ctx, &cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: aws.String(groupName),
 	})
-	// error intentionally ignored — group may already exist
+	var alreadyExists *types.ResourceAlreadyExistsException
+	if err != nil && !errors.As(err, &alreadyExists) {
+		return fmt.Errorf("failed to create log group: %w", err)
+	}
 
 	if retentionDays := ctx.Value(retentionDaysKey); retentionDays != nil {
 		if days, ok := retentionDays.(int32); ok {
