@@ -209,26 +209,24 @@ func (h *handler) ensureLogGroup(ctx context.Context, groupName string) error {
 		return nil
 	}
 
-	_, err := h.client.CreateLogGroup(ctx, &cloudwatchlogs.CreateLogGroupInput{
+	h.client.CreateLogGroup(ctx, &cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: aws.String(groupName),
 	})
-
-	h.createdGroups[groupName] = true
-
-	if err != nil {
-		// log group probably already exists
-		return nil
-	}
+	// error intentionally ignored — group may already exist
 
 	if retentionDays := ctx.Value(retentionDaysKey); retentionDays != nil {
 		if days, ok := retentionDays.(int32); ok {
-			_, _ = h.client.PutRetentionPolicy(ctx, &cloudwatchlogs.PutRetentionPolicyInput{
+			_, err := h.client.PutRetentionPolicy(ctx, &cloudwatchlogs.PutRetentionPolicyInput{
 				LogGroupName:    aws.String(groupName),
 				RetentionInDays: aws.Int32(days),
 			})
+			if err != nil {
+				return fmt.Errorf("failed to set retention days: %w", err)
+			}
 		}
 	}
 
+	h.createdGroups[groupName] = true
 	return nil
 }
 

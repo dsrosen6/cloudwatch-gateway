@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 )
 
 type attr struct {
@@ -56,7 +57,15 @@ func handleRequest(ctx context.Context, request request) (response, error) {
 		attrs = append(attrs, slog.Any(attr.Key, attr.Value))
 	}
 
-	logger.LogAttrs(ctx, level, request.Message, attrs...)
+	record := slog.NewRecord(time.Now(), level, request.Message, 0)
+	record.AddAttrs(attrs...)
+
+	if err := logger.Handler().Handle(ctx, record); err != nil {
+		return response{
+			Success: false,
+			Error:   err.Error(),
+		}, err
+	}
 
 	return response{
 		Success: true,
