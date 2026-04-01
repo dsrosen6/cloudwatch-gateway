@@ -39,7 +39,7 @@ create_function() {
 
     if aws lambda create-function \
         --function-name "$FUNCTION_NAME" \
-        --runtime provided.al2 \
+        --runtime provided.al2023 \
         --handler bootstrap \
         --zip-file fileb://function.zip \
         --role "$IAM_ROLE_ARN"; then
